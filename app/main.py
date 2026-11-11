@@ -152,6 +152,22 @@ def main():
 
     client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 
+    skills = load_skills()
+
+    remaining = args.p.strip()
+    invoked_skills = []
+
+    while remaining:
+        parts = remaining.split(None, 1)
+        token = parts[0]
+        if token.startswith("/") and token[1:] in skills:
+            invoked_skills.append(token[1:])
+            remaining = parts[1].strip() if len(parts) > 1 else ""
+        else:
+            break
+
+    raw_args = remaining
+
     tools = [
         {
             "type": "function",
@@ -208,30 +224,32 @@ def main():
                 },
             },
         },
-        {
-            "type": "function",
-            "function": {
-                "name": "Skill",
-                "description": "Load a skill's instructions into the conversation",
-                "parameters": {
-                    "type": "object",
-                    "required": ["name"],
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "description": "The name of the skill to use",
-                        },
-                        "args": {
-                            "type": "string",
-                            "description": "Optional arguments for the skill",
+    ]
+
+    if skills and not invoked_skills:
+        tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": "Skill",
+                    "description": "Load a skill's instructions into the conversation",
+                    "parameters": {
+                        "type": "object",
+                        "required": ["name"],
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "The name of the skill to use",
+                            },
+                            "args": {
+                                "type": "string",
+                                "description": "Optional arguments for the skill",
+                            },
                         },
                     },
                 },
-            },
-        },
-    ]
-
-    skills = load_skills()
+            }
+        )
 
     messages = []
     if skills:
@@ -242,26 +260,12 @@ def main():
                 continue
             seen.add(skill["name"])
             skills_list.append(f"- {skill['name']}: {skill['description']}")
-        system_content = (
-            "You have access to the following skills:\n\n"
-            + "\n".join(skills_list)
-            + "\n\nIf a skill matches the user's request, call the Skill tool with its name and follow the instructions it returns."
-        )
+        system_content = "You have access to the following skills:\n\n" + "\n".join(skills_list)
+        if not invoked_skills:
+            system_content += (
+                "\n\nIf a skill matches the user's request, call the Skill tool with its name and follow the instructions it returns."
+            )
         messages.append({"role": "system", "content": system_content})
-
-    remaining = args.p.strip()
-    invoked_skills = []
-
-    while remaining:
-        parts = remaining.split(None, 1)
-        token = parts[0]
-        if token.startswith("/") and token[1:] in skills:
-            invoked_skills.append(token[1:])
-            remaining = parts[1].strip() if len(parts) > 1 else ""
-        else:
-            break
-
-    raw_args = remaining
 
     if invoked_skills:
         for skill_name in invoked_skills:
