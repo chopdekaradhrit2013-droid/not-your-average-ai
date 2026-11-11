@@ -128,6 +128,7 @@ def run_agent_loop(client, messages, tools, skills=None, lsp_client=None):
             return message.content
 
         for tool_call in message.tool_calls:
+            print(f"[DEBUG] Executing tool: {tool_call.function.name} args: {tool_call.function.arguments}", file=sys.stderr)
             result = execute_tool(tool_call, client=client, tools=tools, skills=skills, lsp_client=lsp_client)
             messages.append(
                 {
