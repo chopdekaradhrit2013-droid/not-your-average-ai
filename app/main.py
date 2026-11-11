@@ -54,6 +54,49 @@ def execute_tool(tool_call):
     return ""
 
 
+def load_skills():
+    skills = {}
+    skills_dir = os.path.join(os.getcwd(), ".claude", "skills")
+    if not os.path.isdir(skills_dir):
+        return skills
+
+    for entry in sorted(os.listdir(skills_dir)):
+        entry_path = os.path.join(skills_dir, entry)
+        if os.path.isdir(entry_path):
+            skill_file = os.path.join(entry_path, "SKILL.md")
+            if os.path.isfile(skill_file):
+                try:
+                    with open(skill_file, "r", encoding="utf-8") as f:
+                        content = f.read().lstrip()
+                    name = entry
+                    description = ""
+                    body = ""
+                    if content.startswith("---"):
+                        parts = content[3:].split("---", 1)
+                        if len(parts) >= 2:
+                            frontmatter = parts[0]
+                            body = parts[1].strip()
+                            for line in frontmatter.splitlines():
+                                line = line.strip()
+                                if line.startswith("name:"):
+                                    name = line.split("name:", 1)[1].strip()
+                                elif line.startswith("description:"):
+                                    description = line.split("description:", 1)[1].strip()
+                    else:
+                        body = content.strip()
+                    skill_data = {
+                        "name": name,
+                        "description": description,
+                        "body": body,
+                    }
+                    skills[entry] = skill_data
+                    if name != entry:
+                        skills[name] = skill_data
+                except Exception:
+                    pass
+    return skills
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("-p", required=True)
@@ -122,7 +165,28 @@ def main():
         },
     ]
 
-    messages = [{"role": "user", "content": args.p}]
+    skills = load_skills()
+
+    messages = []
+    if skills:
+        skills_list = []
+        seen = set()
+        for skill in skills.values():
+            if skill["name"] in seen:
+                continue
+            seen.add(skill["name"])
+            skills_list.append(f"- {skill['name']}: {skill['description']}")
+        system_content = "You have access to the following skills:\n\n" + "\n".join(skills_list)
+        messages.append({"role": "system", "content": system_content})
+
+    user_prompt = args.p
+    if args.p.startswith("/"):
+        parts = args.p.strip().split(None, 1)
+        skill_name = parts[0][1:]
+        if skill_name in skills:
+            user_prompt = skills[skill_name]["body"]
+
+    messages.append({"role": "user", "content": user_prompt})
 
     while True:
         chat = client.chat.completions.create(
