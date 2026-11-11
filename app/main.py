@@ -23,6 +23,88 @@ API_KEY = os.getenv("OPENROUTER_API_KEY")
 BASE_URL = os.getenv("OPENROUTER_BASE_URL", default="https://openrouter.ai/api/v1")
 
 
+def poll_lsp_diagnostics(lsp_client):
+    if not hasattr(lsp_client, "notification_cursor"):
+        lsp_client.notification_cursor = 0
+    if not hasattr(lsp_client, "file_diagnostics"):
+        lsp_client.file_diagnostics = {}
+    if not hasattr(lsp_client, "last_shown_diagnostics"):
+        lsp_client.last_shown_diagnostics = {}
+    if not hasattr(lsp_client, "document_versions"):
+        lsp_client.document_versions = {}
+
+    try:
+        resp = lsp_client.notifications(after=lsp_client.notification_cursor, timeout_ms=0)
+    except Exception:
+        return []
+
+    if not resp:
+        return []
+
+    if "cursor" in resp:
+        lsp_client.notification_cursor = resp["cursor"]
+
+    notifications = resp.get("notifications", [])
+    for notif in notifications:
+        if notif.get("method") == "textDocument/publishDiagnostics":
+            params = notif.get("params", {})
+            raw_uri = params.get("uri")
+            if not raw_uri:
+                continue
+
+            parsed = urlparse(raw_uri)
+            if parsed.netloc and parsed.netloc != "localhost":
+                path = f"//{parsed.netloc}{unquote(parsed.path)}"
+            else:
+                path = unquote(parsed.path)
+            abs_file = os.path.abspath(url2pathname(path))
+            canonical_uri = pathlib.Path(abs_file).as_uri()
+
+            report_version = params.get("version")
+            last_sent_version = lsp_client.document_versions.get(canonical_uri)
+            if last_sent_version is None:
+                last_sent_version = lsp_client.document_versions.get(raw_uri)
+
+            # Check staleness:
+            # - If report has a version and we sent a version for this file, they must match.
+            # - If no version was supplied in the report, accept it.
+            # - If we never sent a version for this file, accept it.
+            if report_version is not None and last_sent_version is not None:
+                if report_version != last_sent_version:
+                    continue  # Stale report, ignore
+
+            rel_file = os.path.relpath(abs_file, os.getcwd())
+
+            diag_list = []
+            for d in params.get("diagnostics", []):
+                range_obj = d.get("range", {})
+                start = range_obj.get("start", {})
+                line = start.get("line", 0) + 1
+                char = start.get("character", 0) + 1
+                msg = d.get("message", "")
+                diag_list.append((line, char, msg))
+
+            # Latest report replaces previous report for this file
+            lsp_client.file_diagnostics[rel_file] = diag_list
+
+    new_issue_lines = []
+    for rel_file in sorted(lsp_client.file_diagnostics.keys()):
+        current_diags = lsp_client.file_diagnostics[rel_file]
+        last_shown = lsp_client.last_shown_diagnostics.get(rel_file, set())
+        current_set = set(current_diags)
+
+        seen_in_batch = set()
+        for line, char, msg in current_diags:
+            issue_key = (line, char, msg)
+            if issue_key not in last_shown and issue_key not in seen_in_batch:
+                new_issue_lines.append(f"{rel_file}: [Line {line}:{char}] {msg}")
+                seen_in_batch.add(issue_key)
+
+        lsp_client.last_shown_diagnostics[rel_file] = current_set
+
+    return new_issue_lines
+
+
 def run_agent_loop(client, messages, tools, skills=None, lsp_client=None):
     while True:
         chat = client.chat.completions.create(
@@ -49,6 +131,21 @@ def run_agent_loop(client, messages, tools, skills=None, lsp_client=None):
                     "content": result,
                 }
             )
+
+        if lsp_client and messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "tool":
+            new_diags = poll_lsp_diagnostics(lsp_client)
+            if new_diags:
+                if len(new_diags) == 1:
+                    diag_text = (
+                        f"\n\n<new-diagnostics>The following new diagnostic issues were detected: {new_diags[0]}</new-diagnostics>"
+                    )
+                else:
+                    diag_text = (
+                        "\n\n<new-diagnostics>The following new diagnostic issues were detected:\n"
+                        + "\n".join(new_diags)
+                        + "\n</new-diagnostics>"
+                    )
+                messages[-1]["content"] += diag_text
 
 
 def execute_tool(tool_call, client=None, tools=None, skills=None, lsp_client=None):
