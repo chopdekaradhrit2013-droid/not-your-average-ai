@@ -75,6 +75,44 @@ def execute_tool(tool_call, client=None, tools=None, skills=None, lsp_client=Non
                 os.makedirs(parent_dir, exist_ok=True)
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
+
+            if lsp_client:
+                abs_path = os.path.abspath(file_path)
+                _, ext = os.path.splitext(abs_path)
+                if ext in lsp_client.extension_to_language:
+                    lang_id = lsp_client.extension_to_language[ext]
+                    uri = pathlib.Path(abs_path).as_uri()
+
+                    if not hasattr(lsp_client, "document_versions"):
+                        lsp_client.document_versions = {}
+
+                    if uri in lsp_client.document_versions:
+                        next_ver = lsp_client.document_versions[uri] + 1
+                        lsp_client.notify(
+                            "textDocument/didChange",
+                            {
+                                "textDocument": {
+                                    "uri": uri,
+                                    "version": next_ver,
+                                },
+                                "contentChanges": [{"text": content}],
+                            },
+                        )
+                        lsp_client.document_versions[uri] = next_ver
+                    else:
+                        lsp_client.notify(
+                            "textDocument/didOpen",
+                            {
+                                "textDocument": {
+                                    "uri": uri,
+                                    "languageId": lang_id,
+                                    "version": 1,
+                                    "text": content,
+                                },
+                            },
+                        )
+                        lsp_client.document_versions[uri] = 1
+
             return "File written successfully"
         except Exception as e:
             return f"Error writing file: {e}"
@@ -130,10 +168,10 @@ def execute_tool(tool_call, client=None, tools=None, skills=None, lsp_client=Non
             abs_path = os.path.abspath(file_path)
             uri = pathlib.Path(abs_path).as_uri()
 
-            if not hasattr(lsp_client, "opened_documents"):
-                lsp_client.opened_documents = set()
+            if not hasattr(lsp_client, "document_versions"):
+                lsp_client.document_versions = {}
 
-            if uri not in lsp_client.opened_documents:
+            if uri not in lsp_client.document_versions:
                 _, ext = os.path.splitext(abs_path)
                 lang_id = lsp_client.extension_to_language.get(ext, "python")
                 try:
@@ -150,7 +188,7 @@ def execute_tool(tool_call, client=None, tools=None, skills=None, lsp_client=Non
                             }
                         },
                     )
-                    lsp_client.opened_documents.add(uri)
+                    lsp_client.document_versions[uri] = 1
                 except Exception as e:
                     return f"Error opening document in LSP: {e}"
 
@@ -192,10 +230,10 @@ def execute_tool(tool_call, client=None, tools=None, skills=None, lsp_client=Non
             abs_path = os.path.abspath(file_path)
             uri = pathlib.Path(abs_path).as_uri()
 
-            if not hasattr(lsp_client, "opened_documents"):
-                lsp_client.opened_documents = set()
+            if not hasattr(lsp_client, "document_versions"):
+                lsp_client.document_versions = {}
 
-            if uri not in lsp_client.opened_documents:
+            if uri not in lsp_client.document_versions:
                 _, ext = os.path.splitext(abs_path)
                 lang_id = lsp_client.extension_to_language.get(ext, "python")
                 try:
@@ -212,7 +250,7 @@ def execute_tool(tool_call, client=None, tools=None, skills=None, lsp_client=Non
                             }
                         },
                     )
-                    lsp_client.opened_documents.add(uri)
+                    lsp_client.document_versions[uri] = 1
                 except Exception as e:
                     return f"Error opening document in LSP: {e}"
 
