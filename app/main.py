@@ -23,7 +23,23 @@ API_KEY = os.getenv("OPENROUTER_API_KEY")
 BASE_URL = os.getenv("OPENROUTER_BASE_URL", default="https://openrouter.ai/api/v1")
 
 
+def uri_to_path(uri: str) -> str:
+    """Convert a file URI to an absolute filesystem path."""
+    parsed = urlparse(uri)
+    if parsed.netloc and parsed.netloc != "localhost":
+        path = f"//{parsed.netloc}{unquote(parsed.path)}"
+    else:
+        path = unquote(parsed.path)
+    return os.path.abspath(url2pathname(path))
+
+
+def path_to_uri(file_path: str) -> str:
+    """Convert a filesystem path to a file URI."""
+    return pathlib.Path(os.path.abspath(file_path)).as_uri()
+
+
 def poll_lsp_diagnostics(lsp_client):
+    """Poll and format newly available language server diagnostics."""
     if not hasattr(lsp_client, "notification_cursor"):
         lsp_client.notification_cursor = 0
     if not hasattr(lsp_client, "file_diagnostics"):
@@ -52,13 +68,8 @@ def poll_lsp_diagnostics(lsp_client):
             if not raw_uri:
                 continue
 
-            parsed = urlparse(raw_uri)
-            if parsed.netloc and parsed.netloc != "localhost":
-                path = f"//{parsed.netloc}{unquote(parsed.path)}"
-            else:
-                path = unquote(parsed.path)
-            abs_file = os.path.abspath(url2pathname(path))
-            canonical_uri = pathlib.Path(abs_file).as_uri()
+            abs_file = uri_to_path(raw_uri)
+            canonical_uri = path_to_uri(abs_file)
 
             report_version = params.get("version")
             last_sent_version = lsp_client.document_versions.get(canonical_uri)
@@ -198,7 +209,7 @@ def execute_tool(tool_call, client=None, tools=None, skills=None, lsp_client=Non
                 _, ext = os.path.splitext(abs_path)
                 if ext in lsp_client.extension_to_language:
                     lang_id = lsp_client.extension_to_language[ext]
-                    uri = pathlib.Path(abs_path).as_uri()
+                    uri = path_to_uri(abs_path)
 
                     if not hasattr(lsp_client, "document_versions"):
                         lsp_client.document_versions = {}
@@ -283,7 +294,7 @@ def execute_tool(tool_call, client=None, tools=None, skills=None, lsp_client=Non
 
         if operation == "goToDefinition":
             abs_path = os.path.abspath(file_path)
-            uri = pathlib.Path(abs_path).as_uri()
+            uri = path_to_uri(abs_path)
 
             if not hasattr(lsp_client, "document_versions"):
                 lsp_client.document_versions = {}
@@ -337,15 +348,14 @@ def execute_tool(tool_call, client=None, tools=None, skills=None, lsp_client=Non
             def_line = start.get("line", 0) + 1
             def_char = start.get("character", 0) + 1
 
-            parsed = urlparse(target_uri)
-            target_file = url2pathname(unquote(parsed.path))
+            target_file = uri_to_path(target_uri)
             rel_target = os.path.relpath(target_file, os.getcwd())
 
             return f"Defined in {rel_target}:{def_line}:{def_char}"
 
         elif operation == "findReferences":
             abs_path = os.path.abspath(file_path)
-            uri = pathlib.Path(abs_path).as_uri()
+            uri = path_to_uri(abs_path)
 
             if not hasattr(lsp_client, "document_versions"):
                 lsp_client.document_versions = {}
@@ -400,8 +410,7 @@ def execute_tool(tool_call, client=None, tools=None, skills=None, lsp_client=Non
                 ref_line = start.get("line", 0) + 1
                 ref_char = start.get("character", 0) + 1
 
-                parsed = urlparse(target_uri)
-                target_file = url2pathname(unquote(parsed.path))
+                target_file = uri_to_path(target_uri)
                 rel_target = os.path.relpath(target_file, os.getcwd())
                 refs_by_file[rel_target].append((ref_line, ref_char))
                 total_refs += 1
