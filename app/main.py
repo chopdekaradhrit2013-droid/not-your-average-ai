@@ -683,7 +683,8 @@ def main():
         lsp_text = (
             "When migrating or refactoring code across multiple files, you must edit only one file per turn.\n"
             "Edit the definition or API file first, and do NOT edit caller or dependent files in the same turn.\n"
-            "After writing a file, wait for language server diagnostics (<new-diagnostics>) in the tool result to see type errors, and use those diagnostics to repair caller files in subsequent turns."
+            "After writing a file, wait for language server diagnostics (<new-diagnostics>) in the tool result to see type errors, and use those diagnostics to repair caller files in subsequent turns.\n"
+            "After all Write edits, when repeating findReferences at the updated definition, use goToDefinition first (e.g. from a caller) or inspect line numbers to find the exact 1-based line and character where the definition is now located, and call findReferences at that exact definition position."
         )
         system_parts.append(lsp_text)
 
