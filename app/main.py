@@ -1,4 +1,5 @@
 import argparse
+from collections import defaultdict
 import json
 import os
 import pathlib
@@ -187,6 +188,79 @@ def execute_tool(tool_call, client=None, tools=None, skills=None, lsp_client=Non
 
             return f"Defined in {rel_target}:{def_line}:{def_char}"
 
+        elif operation == "findReferences":
+            abs_path = os.path.abspath(file_path)
+            uri = pathlib.Path(abs_path).as_uri()
+
+            if not hasattr(lsp_client, "opened_documents"):
+                lsp_client.opened_documents = set()
+
+            if uri not in lsp_client.opened_documents:
+                _, ext = os.path.splitext(abs_path)
+                lang_id = lsp_client.extension_to_language.get(ext, "python")
+                try:
+                    with open(abs_path, "r", encoding="utf-8") as f:
+                        file_text = f.read()
+                    lsp_client.notify(
+                        "textDocument/didOpen",
+                        {
+                            "textDocument": {
+                                "uri": uri,
+                                "languageId": lang_id,
+                                "version": 1,
+                                "text": file_text,
+                            }
+                        },
+                    )
+                    lsp_client.opened_documents.add(uri)
+                except Exception as e:
+                    return f"Error opening document in LSP: {e}"
+
+            try:
+                resp = lsp_client.request(
+                    "textDocument/references",
+                    {
+                        "textDocument": {"uri": uri},
+                        "position": {
+                            "line": line - 1,
+                            "character": character - 1,
+                        },
+                        "context": {"includeDeclaration": True},
+                    },
+                )
+            except Exception as e:
+                return f"Error requesting references from LSP: {e}"
+
+            if not resp:
+                return "No references found"
+
+            refs_by_file = defaultdict(list)
+            total_refs = 0
+            for loc in resp:
+                target_uri = loc.get("uri") or loc.get("targetUri")
+                if not target_uri:
+                    continue
+                range_obj = loc.get("range") or loc.get("targetRange") or loc.get("targetSelectionRange") or {}
+                start = range_obj.get("start", {})
+                ref_line = start.get("line", 0) + 1
+                ref_char = start.get("character", 0) + 1
+
+                parsed = urlparse(target_uri)
+                target_file = url2pathname(unquote(parsed.path))
+                rel_target = os.path.relpath(target_file, os.getcwd())
+                refs_by_file[rel_target].append((ref_line, ref_char))
+                total_refs += 1
+
+            if total_refs == 0:
+                return "No references found"
+
+            lines = [f"Found {total_refs} reference{'s' if total_refs != 1 else ''} across {len(refs_by_file)} file{'s' if len(refs_by_file) != 1 else ''}:"]
+            for fpath, positions in refs_by_file.items():
+                lines.append(f"{fpath}:")
+                for r_line, r_char in positions:
+                    lines.append(f"  Line {r_line}:{r_char}")
+            return "\n".join(lines)
+
         return f"Unknown LSP operation: {operation}"
 
     return ""
@@ -370,13 +444,13 @@ def main():
                 "type": "function",
                 "function": {
                     "name": "LSP",
-                    "description": "Returns the file, line, and character where a symbol is defined.",
+                    "description": "Returns the file, line, and character where a symbol is defined, or finds all references to a symbol.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "operation": {
                                 "type": "string",
-                                "enum": ["goToDefinition"],
+                                "enum": ["goToDefinition", "findReferences"],
                             },
                             "filePath": {
                                 "type": "string",
