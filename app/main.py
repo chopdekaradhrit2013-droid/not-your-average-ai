@@ -11,7 +11,7 @@ API_KEY = os.getenv("OPENROUTER_API_KEY")
 BASE_URL = os.getenv("OPENROUTER_BASE_URL", default="https://openrouter.ai/api/v1")
 
 
-def execute_tool(tool_call):
+def execute_tool(tool_call, skills=None):
     name = tool_call.function.name
     try:
         tool_args = json.loads(tool_call.function.arguments)
@@ -51,6 +51,21 @@ def execute_tool(tool_call):
             return (res.stdout or "") + (res.stderr or "")
         except Exception as e:
             return f"Error executing command: {e}"
+
+    elif name in ("Skill", "skill"):
+        skill_name = tool_args.get("name")
+        raw_args = tool_args.get("args") or ""
+        if skills and skill_name in skills:
+            skill = skills[skill_name]
+            body = substitute_skill_body(skill["body"], raw_args)
+            if "dir" in skill:
+                return (
+                    f"Skill: {skill['name']} (located at {skill['dir']})\n"
+                    f"Paths in the instructions below are relative to that folder.\n\n"
+                    f"{body}"
+                )
+            return body
+        return f"Error: Skill '{skill_name}' not found."
 
     return ""
 
@@ -193,6 +208,27 @@ def main():
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "Skill",
+                "description": "Load a skill's instructions into the conversation",
+                "parameters": {
+                    "type": "object",
+                    "required": ["name"],
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "The name of the skill to use",
+                        },
+                        "args": {
+                            "type": "string",
+                            "description": "Optional arguments for the skill",
+                        },
+                    },
+                },
+            },
+        },
     ]
 
     skills = load_skills()
@@ -206,7 +242,11 @@ def main():
                 continue
             seen.add(skill["name"])
             skills_list.append(f"- {skill['name']}: {skill['description']}")
-        system_content = "You have access to the following skills:\n\n" + "\n".join(skills_list)
+        system_content = (
+            "You have access to the following skills:\n\n"
+            + "\n".join(skills_list)
+            + "\n\nIf a skill matches the user's request, call the Skill tool with its name and follow the instructions it returns."
+        )
         messages.append({"role": "system", "content": system_content})
 
     remaining = args.p.strip()
@@ -255,7 +295,7 @@ def main():
             break
 
         for tool_call in message.tool_calls:
-            result = execute_tool(tool_call)
+            result = execute_tool(tool_call, skills=skills)
             messages.append(
                 {
                     "role": "tool",
