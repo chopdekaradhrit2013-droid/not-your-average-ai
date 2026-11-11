@@ -10,14 +10,33 @@ BASE_URL = os.getenv("OPENROUTER_BASE_URL", default="https://openrouter.ai/api/v
 
 
 def execute_tool(tool_call):
-    if tool_call.function.name in ("Read", "read", "read_file"):
+    name = tool_call.function.name
+    try:
+        tool_args = json.loads(tool_call.function.arguments)
+    except Exception as e:
+        return f"Error parsing arguments: {e}"
+
+    if name in ("Read", "read", "read_file", "ReadFile"):
+        file_path = tool_args.get("file_path")
         try:
-            tool_args = json.loads(tool_call.function.arguments)
-            file_path = tool_args.get("file_path")
             with open(file_path, "r", encoding="utf-8") as f:
                 return f.read()
         except Exception as e:
             return f"Error reading file: {e}"
+
+    elif name in ("Write", "write", "write_file", "WriteFile"):
+        file_path = tool_args.get("file_path")
+        content = tool_args.get("content", "")
+        try:
+            parent_dir = os.path.dirname(file_path)
+            if parent_dir:
+                os.makedirs(parent_dir, exist_ok=True)
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            return "File written successfully"
+        except Exception as e:
+            return f"Error writing file: {e}"
+
     return ""
 
 
@@ -48,7 +67,28 @@ def main():
                     "required": ["file_path"],
                 },
             },
-        }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "Write",
+                "description": "Write content to a file",
+                "parameters": {
+                    "type": "object",
+                    "required": ["file_path", "content"],
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "The path of the file to write to",
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "The content to write to the file",
+                        },
+                    },
+                },
+            },
+        },
     ]
 
     messages = [{"role": "user", "content": args.p}]
