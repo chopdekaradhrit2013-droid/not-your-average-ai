@@ -11,7 +11,35 @@ API_KEY = os.getenv("OPENROUTER_API_KEY")
 BASE_URL = os.getenv("OPENROUTER_BASE_URL", default="https://openrouter.ai/api/v1")
 
 
-def execute_tool(tool_call, skills=None):
+def run_agent_loop(client, messages, tools, skills=None):
+    while True:
+        chat = client.chat.completions.create(
+            model="anthropic/claude-haiku-4.5",
+            messages=messages,
+            tools=tools,
+        )
+
+        if not chat.choices or len(chat.choices) == 0:
+            raise RuntimeError("no choices in response")
+
+        message = chat.choices[0].message
+        messages.append(message)
+
+        if not message.tool_calls:
+            return message.content
+
+        for tool_call in message.tool_calls:
+            result = execute_tool(tool_call, client=client, tools=tools, skills=skills)
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": result,
+                }
+            )
+
+
+def execute_tool(tool_call, client=None, tools=None, skills=None):
     name = tool_call.function.name
     try:
         tool_args = json.loads(tool_call.function.arguments)
@@ -58,13 +86,22 @@ def execute_tool(tool_call, skills=None):
         if skills and skill_name in skills:
             skill = skills[skill_name]
             body = substitute_skill_body(skill["body"], raw_args)
-            if "dir" in skill:
-                return (
+            has_scripts = "scripts/" in body
+            content = body
+            if "dir" in skill and (has_scripts or os.path.isdir(os.path.join(os.getcwd(), skill["dir"], "scripts"))):
+                content = (
                     f"Skill: {skill['name']} (located at {skill['dir']})\n"
                     f"Paths in the instructions below are relative to that folder.\n\n"
                     f"{body}"
                 )
-            return body
+
+            if skill.get("context") == "fork" and client:
+                subagent_messages = [{"role": "user", "content": content}]
+                subagent_tools = [t for t in tools if t.get("function", {}).get("name") != "Skill"] if tools else []
+                subagent_result = run_agent_loop(client, subagent_messages, subagent_tools, skills=skills)
+                return f"Skill {skill['name']} ran in a separate context and returned: {subagent_result}"
+
+            return content
         return f"Error: Skill '{skill_name}' not found."
 
     return ""
@@ -96,6 +133,7 @@ def load_skills():
                         content = f.read().lstrip()
                     name = entry
                     description = ""
+                    context = ""
                     body = ""
                     if content.startswith("---"):
                         parts = content[3:].split("---", 1)
@@ -105,14 +143,17 @@ def load_skills():
                             for line in frontmatter.splitlines():
                                 line = line.strip()
                                 if line.startswith("name:"):
-                                    name = line.split("name:", 1)[1].strip()
+                                    name = line.split("name:", 1)[1].strip().strip("'\"")
                                 elif line.startswith("description:"):
-                                    description = line.split("description:", 1)[1].strip()
+                                    description = line.split("description:", 1)[1].strip().strip("'\"")
+                                elif line.startswith("context:"):
+                                    context = line.split("context:", 1)[1].strip().strip("'\"")
                     else:
                         body = content.strip()
                     skill_data = {
                         "name": name,
                         "description": description,
+                        "context": context,
                         "body": body,
                         "dir": f".claude/skills/{entry}",
                     }
@@ -161,8 +202,11 @@ def main():
         parts = remaining.split(None, 1)
         token = parts[0]
         if token.startswith("/") and token[1:] in skills:
-            invoked_skills.append(token[1:])
+            sname = token[1:]
+            invoked_skills.append(sname)
             remaining = parts[1].strip() if len(parts) > 1 else ""
+            if skills[sname].get("context") == "fork":
+                break
         else:
             break
 
@@ -280,33 +324,9 @@ def main():
     else:
         messages.append({"role": "user", "content": args.p})
 
-    while True:
-        chat = client.chat.completions.create(
-            model="anthropic/claude-haiku-4.5",
-            messages=messages,
-            tools=tools,
-        )
-
-        if not chat.choices or len(chat.choices) == 0:
-            raise RuntimeError("no choices in response")
-
-        message = chat.choices[0].message
-        messages.append(message)
-
-        if not message.tool_calls:
-            if message.content:
-                print(message.content)
-            break
-
-        for tool_call in message.tool_calls:
-            result = execute_tool(tool_call, skills=skills)
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": result,
-                }
-            )
+    final_content = run_agent_loop(client, messages, tools, skills=skills)
+    if final_content is not None:
+        print(final_content)
 
 
 if __name__ == "__main__":
