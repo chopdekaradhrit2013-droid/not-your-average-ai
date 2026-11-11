@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import subprocess
 import sys
 
 from openai import OpenAI
@@ -36,6 +37,19 @@ def execute_tool(tool_call):
             return "File written successfully"
         except Exception as e:
             return f"Error writing file: {e}"
+
+    elif name in ("Bash", "bash", "RunBashCommand", "run_bash_command"):
+        command = tool_args.get("command")
+        try:
+            res = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+            )
+            return (res.stdout or "") + (res.stderr or "")
+        except Exception as e:
+            return f"Error executing command: {e}"
 
     return ""
 
@@ -84,6 +98,23 @@ def main():
                         "content": {
                             "type": "string",
                             "description": "The content to write to the file",
+                        },
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "Bash",
+                "description": "Execute a shell command",
+                "parameters": {
+                    "type": "object",
+                    "required": ["command"],
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "The command to execute",
                         },
                     },
                 },
