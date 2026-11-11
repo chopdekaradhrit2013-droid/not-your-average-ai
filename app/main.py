@@ -198,15 +198,26 @@ def main():
         system_content = "You have access to the following skills:\n\n" + "\n".join(skills_list)
         messages.append({"role": "system", "content": system_content})
 
-    user_prompt = args.p
-    if args.p.startswith("/"):
-        parts = args.p.strip().split(None, 1)
-        skill_name = parts[0][1:]
-        raw_args = parts[1].strip() if len(parts) > 1 else ""
-        if skill_name in skills:
-            user_prompt = substitute_skill_body(skills[skill_name]["body"], raw_args)
+    remaining = args.p.strip()
+    invoked_skills = []
 
-    messages.append({"role": "user", "content": user_prompt})
+    while remaining:
+        parts = remaining.split(None, 1)
+        token = parts[0]
+        if token.startswith("/") and token[1:] in skills:
+            invoked_skills.append(token[1:])
+            remaining = parts[1].strip() if len(parts) > 1 else ""
+        else:
+            break
+
+    raw_args = remaining
+
+    if invoked_skills:
+        for skill_name in invoked_skills:
+            body = substitute_skill_body(skills[skill_name]["body"], raw_args)
+            messages.append({"role": "user", "content": body})
+    else:
+        messages.append({"role": "user", "content": args.p})
 
     while True:
         chat = client.chat.completions.create(
