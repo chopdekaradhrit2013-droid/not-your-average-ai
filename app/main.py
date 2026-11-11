@@ -7,6 +7,14 @@ import sys
 
 from openai import OpenAI
 
+try:
+    from app.lsp_client import LSPClient
+except ImportError:
+    try:
+        from lsp_client import LSPClient
+    except ImportError:
+        LSPClient = None
+
 API_KEY = os.getenv("OPENROUTER_API_KEY")
 BASE_URL = os.getenv("OPENROUTER_BASE_URL", default="https://openrouter.ai/api/v1")
 
@@ -104,6 +112,9 @@ def execute_tool(tool_call, client=None, tools=None, skills=None):
             return content
         return f"Error: Skill '{skill_name}' not found."
 
+    elif name in ("LSP", "lsp"):
+        return "LSP is not implemented yet"
+
     return ""
 
 
@@ -193,6 +204,15 @@ def main():
 
     client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 
+    lsp_client = None
+    if LSPClient:
+        try:
+            lsp_client = LSPClient.from_environment()
+            if lsp_client:
+                print("LSP client connected", file=sys.stderr)
+        except Exception as e:
+            print(f"Error initializing LSP client: {e}", file=sys.stderr)
+
     skills = load_skills()
 
     remaining = args.p.strip()
@@ -269,6 +289,41 @@ def main():
             },
         },
     ]
+
+    if lsp_client:
+        tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": "LSP",
+                    "description": "Returns the file, line, and character where a symbol is defined.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "operation": {
+                                "type": "string",
+                                "enum": ["goToDefinition"],
+                            },
+                            "filePath": {
+                                "type": "string",
+                                "description": "Absolute path, or a path relative to the agent's current working directory.",
+                            },
+                            "line": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "description": "1-based line number of the symbol.",
+                            },
+                            "character": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "description": "1-based character offset in UTF-16 code units (same as character count for ASCII).",
+                            },
+                        },
+                        "required": ["operation", "filePath", "line", "character"],
+                    },
+                },
+            }
+        )
 
     if skills and not invoked_skills:
         tools.append(
