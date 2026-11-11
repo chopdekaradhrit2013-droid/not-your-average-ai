@@ -35,7 +35,9 @@ def poll_lsp_diagnostics(lsp_client):
 
     try:
         resp = lsp_client.notifications(after=lsp_client.notification_cursor, timeout_ms=0)
-    except Exception:
+        print(f"[DEBUG] notifications(after={lsp_client.notification_cursor}) -> {resp}", file=sys.stderr)
+    except Exception as e:
+        print(f"[DEBUG] notifications exception: {e}", file=sys.stderr)
         return []
 
     if not resp:
@@ -65,12 +67,15 @@ def poll_lsp_diagnostics(lsp_client):
             if last_sent_version is None:
                 last_sent_version = lsp_client.document_versions.get(raw_uri)
 
+            print(f"[DEBUG] publishDiagnostics uri={raw_uri} canonical={canonical_uri} report_ver={report_version} last_sent_ver={last_sent_version}", file=sys.stderr)
+
             # Check staleness:
             # - If report has a version and we sent a version for this file, they must match.
             # - If no version was supplied in the report, accept it.
             # - If we never sent a version for this file, accept it.
             if report_version is not None and last_sent_version is not None:
                 if report_version != last_sent_version:
+                    print(f"[DEBUG] Stale report ignored for {canonical_uri}", file=sys.stderr)
                     continue  # Stale report, ignore
 
             rel_file = os.path.relpath(abs_file, os.getcwd())
@@ -134,6 +139,7 @@ def run_agent_loop(client, messages, tools, skills=None, lsp_client=None):
 
         if lsp_client and messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "tool":
             new_diags = poll_lsp_diagnostics(lsp_client)
+            print(f"[DEBUG] poll_lsp_diagnostics returned: {new_diags}", file=sys.stderr)
             if new_diags:
                 if len(new_diags) == 1:
                     diag_text = (
@@ -146,6 +152,7 @@ def run_agent_loop(client, messages, tools, skills=None, lsp_client=None):
                         + "\n</new-diagnostics>"
                     )
                 messages[-1]["content"] += diag_text
+                print(f"[DEBUG] appended to messages[-1]: {messages[-1]['content']}", file=sys.stderr)
 
 
 def execute_tool(tool_call, client=None, tools=None, skills=None, lsp_client=None):
