@@ -35,9 +35,7 @@ def poll_lsp_diagnostics(lsp_client):
 
     try:
         resp = lsp_client.notifications(after=lsp_client.notification_cursor, timeout_ms=0)
-        print(f"[DEBUG] notifications(after={lsp_client.notification_cursor}) -> {resp}", file=sys.stderr)
-    except Exception as e:
-        print(f"[DEBUG] notifications exception: {e}", file=sys.stderr)
+    except Exception:
         return []
 
     if not resp:
@@ -67,15 +65,12 @@ def poll_lsp_diagnostics(lsp_client):
             if last_sent_version is None:
                 last_sent_version = lsp_client.document_versions.get(raw_uri)
 
-            print(f"[DEBUG] publishDiagnostics uri={raw_uri} canonical={canonical_uri} report_ver={report_version} last_sent_ver={last_sent_version}", file=sys.stderr)
-
             # Check staleness:
             # - If report has a version and we sent a version for this file, they must match.
             # - If no version was supplied in the report, accept it.
             # - If we never sent a version for this file, accept it.
             if report_version is not None and last_sent_version is not None:
                 if report_version != last_sent_version:
-                    print(f"[DEBUG] Stale report ignored for {canonical_uri}", file=sys.stderr)
                     continue  # Stale report, ignore
 
             rel_file = os.path.relpath(abs_file, os.getcwd())
@@ -127,9 +122,16 @@ def run_agent_loop(client, messages, tools, skills=None, lsp_client=None):
         if not message.tool_calls:
             return message.content
 
+        written_files = set()
         for tool_call in message.tool_calls:
-            print(f"[DEBUG] Executing tool: {tool_call.function.name} args: {tool_call.function.arguments}", file=sys.stderr)
-            result = execute_tool(tool_call, client=client, tools=tools, skills=skills, lsp_client=lsp_client)
+            result = execute_tool(
+                tool_call,
+                client=client,
+                tools=tools,
+                skills=skills,
+                lsp_client=lsp_client,
+                written_files=written_files,
+            )
             messages.append(
                 {
                     "role": "tool",
@@ -140,7 +142,6 @@ def run_agent_loop(client, messages, tools, skills=None, lsp_client=None):
 
         if lsp_client and messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "tool":
             new_diags = poll_lsp_diagnostics(lsp_client)
-            print(f"[DEBUG] poll_lsp_diagnostics returned: {new_diags}", file=sys.stderr)
             if new_diags:
                 if len(new_diags) == 1:
                     diag_text = (
@@ -153,10 +154,9 @@ def run_agent_loop(client, messages, tools, skills=None, lsp_client=None):
                         + "\n</new-diagnostics>"
                     )
                 messages[-1]["content"] += diag_text
-                print(f"[DEBUG] appended to messages[-1]: {messages[-1]['content']}", file=sys.stderr)
 
 
-def execute_tool(tool_call, client=None, tools=None, skills=None, lsp_client=None):
+def execute_tool(tool_call, client=None, tools=None, skills=None, lsp_client=None, written_files=None):
     name = tool_call.function.name
     try:
         tool_args = json.loads(tool_call.function.arguments)
@@ -173,6 +173,15 @@ def execute_tool(tool_call, client=None, tools=None, skills=None, lsp_client=Non
 
     elif name in ("Write", "write", "write_file", "WriteFile"):
         file_path = tool_args.get("file_path")
+        if lsp_client and written_files is not None:
+            norm_path = os.path.normpath(file_path)
+            if written_files and norm_path not in written_files:
+                return (
+                    f"Error: Cannot modify '{file_path}' in this turn. "
+                    "Only one file may be modified per turn. "
+                    "Please review language server diagnostics from the previous file edit before modifying other files."
+                )
+
         content = tool_args.get("content", "")
         try:
             parent_dir = os.path.dirname(file_path)
@@ -180,6 +189,9 @@ def execute_tool(tool_call, client=None, tools=None, skills=None, lsp_client=Non
                 os.makedirs(parent_dir, exist_ok=True)
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
+
+            if written_files is not None:
+                written_files.add(os.path.normpath(file_path))
 
             if lsp_client:
                 abs_path = os.path.abspath(file_path)
@@ -642,6 +654,7 @@ def main():
         )
 
     messages = []
+    system_parts = []
     if skills:
         skills_list = []
         seen = set()
@@ -650,12 +663,23 @@ def main():
                 continue
             seen.add(skill["name"])
             skills_list.append(f"- {skill['name']}: {skill['description']}")
-        system_content = "You have access to the following skills:\n\n" + "\n".join(skills_list)
+        skills_text = "You have access to the following skills:\n\n" + "\n".join(skills_list)
         if not invoked_skills:
-            system_content += (
+            skills_text += (
                 "\n\nIf a skill matches the user's request, call the Skill tool with its name and follow the instructions it returns."
             )
-        messages.append({"role": "system", "content": system_content})
+        system_parts.append(skills_text)
+
+    if lsp_client:
+        lsp_text = (
+            "When migrating or refactoring code across multiple files, you must edit only one file per turn.\n"
+            "Edit the definition or API file first, and do NOT edit caller or dependent files in the same turn.\n"
+            "After writing a file, wait for language server diagnostics (<new-diagnostics>) in the tool result to see type errors, and use those diagnostics to repair caller files in subsequent turns."
+        )
+        system_parts.append(lsp_text)
+
+    if system_parts:
+        messages.append({"role": "system", "content": "\n\n".join(system_parts)})
 
     if invoked_skills:
         for skill_name in invoked_skills:
