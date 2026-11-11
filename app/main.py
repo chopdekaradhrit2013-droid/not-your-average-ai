@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -97,6 +98,24 @@ def load_skills():
     return skills
 
 
+def substitute_skill_body(body, raw_args):
+    arg_list = raw_args.split() if raw_args else []
+
+    def replacer(match):
+        if match.group(1) is not None:
+            idx = int(match.group(1))
+            return arg_list[idx] if 0 <= idx < len(arg_list) else ""
+        elif match.group(0) == "$ARGUMENTS":
+            return raw_args
+        elif match.group(2) is not None:
+            idx = int(match.group(2))
+            return arg_list[idx] if 0 <= idx < len(arg_list) else ""
+        return ""
+
+    pattern = re.compile(r"\$ARGUMENTS\[(\d+)\]|\$ARGUMENTS|\$(\d+)")
+    return pattern.sub(replacer, body)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("-p", required=True)
@@ -183,8 +202,9 @@ def main():
     if args.p.startswith("/"):
         parts = args.p.strip().split(None, 1)
         skill_name = parts[0][1:]
+        raw_args = parts[1].strip() if len(parts) > 1 else ""
         if skill_name in skills:
-            user_prompt = skills[skill_name]["body"]
+            user_prompt = substitute_skill_body(skills[skill_name]["body"], raw_args)
 
     messages.append({"role": "user", "content": user_prompt})
 
