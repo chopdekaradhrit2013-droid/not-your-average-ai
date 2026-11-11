@@ -1,9 +1,12 @@
 import argparse
 import json
 import os
+import pathlib
 import re
 import subprocess
 import sys
+from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
 
 from openai import OpenAI
 
@@ -19,7 +22,7 @@ API_KEY = os.getenv("OPENROUTER_API_KEY")
 BASE_URL = os.getenv("OPENROUTER_BASE_URL", default="https://openrouter.ai/api/v1")
 
 
-def run_agent_loop(client, messages, tools, skills=None):
+def run_agent_loop(client, messages, tools, skills=None, lsp_client=None):
     while True:
         chat = client.chat.completions.create(
             model="anthropic/claude-haiku-4.5",
@@ -37,7 +40,7 @@ def run_agent_loop(client, messages, tools, skills=None):
             return message.content
 
         for tool_call in message.tool_calls:
-            result = execute_tool(tool_call, client=client, tools=tools, skills=skills)
+            result = execute_tool(tool_call, client=client, tools=tools, skills=skills, lsp_client=lsp_client)
             messages.append(
                 {
                     "role": "tool",
@@ -47,7 +50,7 @@ def run_agent_loop(client, messages, tools, skills=None):
             )
 
 
-def execute_tool(tool_call, client=None, tools=None, skills=None):
+def execute_tool(tool_call, client=None, tools=None, skills=None, lsp_client=None):
     name = tool_call.function.name
     try:
         tool_args = json.loads(tool_call.function.arguments)
@@ -106,14 +109,85 @@ def execute_tool(tool_call, client=None, tools=None, skills=None):
             if skill.get("context") == "fork" and client:
                 subagent_messages = [{"role": "user", "content": content}]
                 subagent_tools = [t for t in tools if t.get("function", {}).get("name") != "Skill"] if tools else []
-                subagent_result = run_agent_loop(client, subagent_messages, subagent_tools, skills=skills)
+                subagent_result = run_agent_loop(
+                    client, subagent_messages, subagent_tools, skills=skills, lsp_client=lsp_client
+                )
                 return f"Skill {skill['name']} ran in a separate context and returned: {subagent_result}"
 
             return content
         return f"Error: Skill '{skill_name}' not found."
 
     elif name in ("LSP", "lsp"):
-        return "LSP is not implemented yet"
+        if not lsp_client:
+            return "LSP is not implemented yet"
+        operation = tool_args.get("operation")
+        file_path = tool_args.get("filePath") or tool_args.get("file_path")
+        line = int(tool_args.get("line", 1))
+        character = int(tool_args.get("character", 1))
+
+        if operation == "goToDefinition":
+            abs_path = os.path.abspath(file_path)
+            uri = pathlib.Path(abs_path).as_uri()
+
+            if not hasattr(lsp_client, "opened_documents"):
+                lsp_client.opened_documents = set()
+
+            if uri not in lsp_client.opened_documents:
+                _, ext = os.path.splitext(abs_path)
+                lang_id = lsp_client.extension_to_language.get(ext, "python")
+                try:
+                    with open(abs_path, "r", encoding="utf-8") as f:
+                        file_text = f.read()
+                    lsp_client.notify(
+                        "textDocument/didOpen",
+                        {
+                            "textDocument": {
+                                "uri": uri,
+                                "languageId": lang_id,
+                                "version": 1,
+                                "text": file_text,
+                            }
+                        },
+                    )
+                    lsp_client.opened_documents.add(uri)
+                except Exception as e:
+                    return f"Error opening document in LSP: {e}"
+
+            try:
+                resp = lsp_client.request(
+                    "textDocument/definition",
+                    {
+                        "textDocument": {"uri": uri},
+                        "position": {
+                            "line": line - 1,
+                            "character": character - 1,
+                        },
+                    },
+                )
+            except Exception as e:
+                return f"Error requesting definition from LSP: {e}"
+
+            if not resp:
+                return f"No definition found for {file_path}:{line}:{character}"
+
+            if isinstance(resp, list):
+                loc = resp[0]
+            else:
+                loc = resp
+
+            target_uri = loc.get("uri") or loc.get("targetUri")
+            range_obj = loc.get("range") or loc.get("targetRange") or loc.get("targetSelectionRange") or {}
+            start = range_obj.get("start", {})
+            def_line = start.get("line", 0) + 1
+            def_char = start.get("character", 0) + 1
+
+            parsed = urlparse(target_uri)
+            target_file = url2pathname(unquote(parsed.path))
+            rel_target = os.path.relpath(target_file, os.getcwd())
+
+            return f"Defined in {rel_target}:{def_line}:{def_char}"
+
+        return f"Unknown LSP operation: {operation}"
 
     return ""
 
@@ -379,7 +453,7 @@ def main():
     else:
         messages.append({"role": "user", "content": args.p})
 
-    final_content = run_agent_loop(client, messages, tools, skills=skills)
+    final_content = run_agent_loop(client, messages, tools, skills=skills, lsp_client=lsp_client)
     if final_content is not None:
         print(final_content)
 
