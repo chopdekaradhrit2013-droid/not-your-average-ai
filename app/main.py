@@ -64,6 +64,16 @@ def load_skills():
     for entry in sorted(os.listdir(skills_dir)):
         entry_path = os.path.join(skills_dir, entry)
         if os.path.isdir(entry_path):
+            scripts_dir = os.path.join(entry_path, "scripts")
+            if os.path.isdir(scripts_dir):
+                for s in os.listdir(scripts_dir):
+                    sp = os.path.join(scripts_dir, s)
+                    if os.path.isfile(sp):
+                        try:
+                            os.chmod(sp, os.stat(sp).st_mode | 0o111)
+                        except Exception:
+                            pass
+
             skill_file = os.path.join(entry_path, "SKILL.md")
             if os.path.isfile(skill_file):
                 try:
@@ -89,6 +99,7 @@ def load_skills():
                         "name": name,
                         "description": description,
                         "body": body,
+                        "dir": f".claude/skills/{entry}",
                     }
                     skills[entry] = skill_data
                     if name != entry:
@@ -214,8 +225,14 @@ def main():
 
     if invoked_skills:
         for skill_name in invoked_skills:
-            body = substitute_skill_body(skills[skill_name]["body"], raw_args)
-            messages.append({"role": "user", "content": body})
+            skill = skills[skill_name]
+            body = substitute_skill_body(skill["body"], raw_args)
+            content = (
+                f"Skill: {skill['name']} (located at {skill['dir']})\n"
+                f"Paths in the instructions below are relative to that folder.\n\n"
+                f"{body}"
+            )
+            messages.append({"role": "user", "content": content})
     else:
         messages.append({"role": "user", "content": args.p})
 
